@@ -144,6 +144,11 @@ class Compiler implements InjectionAwareInterface
     protected interpolator;
 
     /**
+     * @var array
+     */
+    protected componentCache = [];
+
+    /**
      * Phalcon\Mvc\View\Engine\Volt\Compiler
      *
      * @param ViewBaseInterface|null view
@@ -2259,74 +2264,87 @@ class Compiler implements InjectionAwareInterface
      */
     public function compileComponent(string viewCode) -> string
     {
-        var processedViewCode;
-        string regex;
-
-        let regex = "#<volt-([a-zA-Z0-9_]+)\s*([^>]*)>(.*?)<\/volt-\\1>#s";
-
-        let processedViewCode = preg_replace_callback(
+        string regex = "#<volt-([a-zA-Z0-9_]+)\s*([^>]*)>(.*?)<\/volt-\\1>#s";
+        return preg_replace_callback(
             regex,
             [this, "processComponent"],
             viewCode
         );
-
-        return processedViewCode;
     }
 
     public function processComponent(matches) -> string
     {
-        var componentCode, match, baseClassMatches, explodeClasses, existingClasses, newClass, mergedClasses, extension;
-        string voltExtension;
-        array attributeMatches, newAttributes, newClasses;
+        var componentName, componentPath, attributesStr, innerContent, componentCode, componentExtension;
+        var match, attrKey, attrValue, tagName, baseClass, classAttr, mergedClasses, finalClass;
+        var newClasses = [], existingClasses = [];
+        array newAttributes = [], attributeMatches = [];
 
-        let voltExtension = ".volt";
-        if fetch extension, this->options["extension"] {
-            let voltExtension = extension;
-        }
-        // check if has nested components
-        if strpos(matches[3], "<volt-") {
-            let matches[3] = this->compileComponent(matches[3]);
-        }
+        let componentName = matches[1],
+            attributesStr = matches[2],
+            innerContent = matches[3];
 
-        // Extract attributes
-        let newAttributes = ["slot": matches[3]];
-        preg_match_all("/([a-zA-Z0-9_-]+)=\"([^\"]*)\"/", matches[2], attributeMatches, PREG_SET_ORDER);
-        for match in attributeMatches {
-            let newAttributes[match[1]] = (match[1] === "class") ? explode(" ", trim(match[2])) : match[2];
+        if strpos(innerContent, "<volt-") !== false {
+            let innerContent = this->compileComponent(innerContent);
         }
 
-        // Read component file
-        let componentCode = file_get_contents(this->view->getViewsDir() . "components/" . matches[1] . voltExtension);
+        let newAttributes["slot"] = innerContent;
 
-        if (componentCode !== false) {
-            // Optimize class merging
-            if (preg_match("/class=\"([^\"]*)\"/", componentCode, baseClassMatches)) {
-                let explodeClasses = explode(" ", baseClassMatches[1]);
-                let existingClasses = array_filter(explodeClasses); // Remove empty values
-                let newClasses = [];
-                if fetch newClass, newAttributes["class"] {
-                    let newClasses = newClass;
+        if preg_match_all("/([a-zA-Z0-9_-]+)=\"([^\"]*)\"/", attributesStr, attributeMatches, PREG_SET_ORDER) {
+            for match in attributeMatches {
+                let attrKey = match[1], attrValue = match[2];
+                if attrKey === "class" {
+                    let newClasses = explode(" ", trim(attrValue));
+                    let newAttributes["class"] = newClasses;
+                } else {
+                    let newAttributes[attrKey] = attrValue;
                 }
+            }
+        }
 
-                let mergedClasses = array_merge(newClasses, existingClasses);
-                let mergedClasses = array_unique(mergedClasses);
-                let componentCode = preg_replace(
-                    "/class=\"([^\"]*)\"/",
-                    "class=\"" . htmlspecialchars(implode(" ", mergedClasses)) . "\"",
-                    componentCode,
-                    1
-                );
-            } elseif (!isset(newAttributes["class"]) || !empty(newAttributes["class"])) {
-                // Add class if none exists
-                let componentCode = preg_replace(
-                    "/<([a-zA-Z0-9]+)\s*/",
-                    "<$1 class=\"" . htmlspecialchars(implode(" ", newAttributes["class"])) . "\" ",
-                    componentCode,
-                    1
-                );
+        // ✅ Check cache before reading file
+        if fetch componentCode, this->componentCache[componentName] {
+            // use cached content
+        } else {
+            // ✅ Generate full file path
+            let componentExtension = ".volt";
+            if isset(this->options["extension"]) {
+                let componentExtension = this->options["extension"];
+            }
+            let componentPath = this->view->getViewsDir() . "components/" . componentName . componentExtension;
+            let componentCode = file_get_contents(componentPath);
+            if componentCode !== false {
+                let this->componentCache[componentName] = componentCode; // ✅ Store in cache
+            }
+        }
+
+        if componentCode !== false {
+            if preg_match("/class=\"([^\"]*)\"/", componentCode, baseClass) {
+                let existingClasses = explode(" ", baseClass[1]);
+                let existingClasses = array_filter(existingClasses);
+
+                if fetch classAttr, newAttributes["class"] {
+                    let mergedClasses = array_unique(array_merge(classAttr, existingClasses));
+                    let finalClass = htmlspecialchars(implode(" ", mergedClasses));
+                    let componentCode = preg_replace(
+                        "/class=\"([^\"]*)\"/",
+                        "class=\"" . finalClass . "\"",
+                        componentCode,
+                        1
+                    );
+                }
+            } elseif isset newAttributes["class"] {
+                let finalClass = htmlspecialchars(implode(" ", newAttributes["class"]));
+                if preg_match("/<([a-zA-Z0-9]+)\s*/", componentCode, match) {
+                    let tagName = match[1];
+                    let componentCode = preg_replace(
+                        "/<" . tagName . "(\s*)/",
+                        "<" . tagName . " class=\"" . finalClass . "\"$1",
+                        componentCode,
+                        1
+                    );
+                }
             }
 
-            // Interpolate variables
             let componentCode = this->interpolator->__invoke(componentCode, newAttributes);
         } else {
             let componentCode = "INVALID RENDERED COMPONENT";
