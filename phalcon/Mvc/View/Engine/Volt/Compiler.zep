@@ -2283,6 +2283,10 @@ class Compiler implements InjectionAwareInterface
         if fetch extension, this->options["extension"] {
             let voltExtension = extension;
         }
+        // check if has nested components
+        if strpos(matches[3], "<volt-") {
+            let matches[3] = this->compileComponent(matches[3]);
+        }
 
         // Extract attributes
         let newAttributes = ["slot": matches[3]];
