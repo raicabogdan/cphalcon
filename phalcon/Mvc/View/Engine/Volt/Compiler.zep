@@ -2264,46 +2264,118 @@ class Compiler implements InjectionAwareInterface
      */
     public function compileComponent(string viewCode) -> string
     {
-        string regex = "#<volt-([a-zA-Z0-9_]+)\s*([^>]*)>(.*?)<\/volt-\\1>#s";
-        return preg_replace_callback(
-            regex,
-            [this, "processComponent"],
-            viewCode
-        );
+        var pos, spacePos, endComponentPos, endComponentNamePos, plusSixPos,
+            innerContent, componentName, attributes, attributesText;
+
+        while (true) {
+            let pos = strpos(viewCode, "<volt-");
+            if false === pos {
+                break;
+            }
+            let plusSixPos = pos + 6;
+            let endComponentPos = strpos(viewCode, ">", plusSixPos);
+            let spacePos = strpos(viewCode, " ", plusSixPos); // attribute spaces
+
+            if false === spacePos || spacePos > endComponentPos {
+                // component has no attributes, there's only the component name
+                let componentName = substr(viewCode, plusSixPos, endComponentPos - pos - 6);
+                let componentName = trim(componentName);
+                let attributes = [];
+            } else {
+                // component has attributes, component name is separated by the first space.
+                let componentName = substr(viewCode, plusSixPos, spacePos - pos - 6);
+                let componentName = trim(componentName);
+                let attributesText = substr(viewCode, spacePos + 1, endComponentPos - spacePos);
+                let attributes = this->getAttributes(attributesText);
+            }
+
+            let endComponentNamePos = strpos(viewCode, "</volt-" . componentName . ">");
+            let innerContent = substr(viewCode, endComponentPos + 1, endComponentNamePos - endComponentPos - 1);
+
+            let viewCode = substr_replace(
+                viewCode,
+                this->renderComponent(componentName, innerContent, attributes),
+                pos,
+                endComponentNamePos + strlen("</volt-" . componentName . ">") - pos
+            );
+        }
+
+        return viewCode;
     }
 
-    public function processComponent(matches) -> string
+    private function getAttributes(string attributesText) -> array
     {
-        var componentName, componentPath, attributesStr, innerContent, componentCode, componentExtension;
-        var match, attrKey, attrValue, tagName, baseClass, classAttr, mergedClasses, finalClass;
-        var newClasses = [], existingClasses = [];
-        array newAttributes = [], attributeMatches = [];
+        int start,
+            pos = 0;
+        array result = [];
+        var attrName, attrValue,
+            length = strlen(attributesText);
 
-        let componentName = matches[1],
-            attributesStr = matches[2],
-            innerContent = matches[3];
+        while pos < length {
+            // Skip leading spaces
+            while pos < length && attributesText[pos] === ' ' {
+                let pos++;
+            }
+
+            // Read attribute name
+            let start = pos;
+            while pos < length && attributesText[pos] !== '=' && attributesText[pos] !== ' ' {
+                let pos++;
+            }
+            let attrName = substr(attributesText, start, pos - start);
+
+            // Skip space (if any) between name and '='
+            while pos < length && attributesText[pos] !== '=' {
+                let pos++;
+            }
+
+            // Skip '='
+            if pos < length && attributesText[pos] === '=' {
+                let pos++;
+            }
+
+            // Skip optional space before opening quote
+            while pos < length && attributesText[pos] === ' ' {
+                let pos++;
+            }
+
+            // Read attribute value (assume double quotes)
+            if (pos < length && attributesText[pos] === '"') {
+                let pos++; // skip opening quote
+                let start = pos;
+                while pos < length && attributesText[pos] !== '"' {
+                    let pos++;
+                }
+                let attrValue = substr(attributesText, start, pos - start);
+                let pos++; // skip closing quote
+
+                // Special handling for class attribute: split by space
+                if attrName === "class" {
+                    let result[attrName] = explode(" ", trim(attrValue));
+                } else {
+                    let result[attrName] = attrValue;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    public function renderComponent(componentName, innerContent, attributes) -> string
+    {
+        var componentPath, componentCode, componentExtension;
+        var match, tagName, baseClass, classAttr, mergedClasses, finalClass;
+        var existingClasses = [];
 
         if strpos(innerContent, "<volt-") !== false {
             let innerContent = this->compileComponent(innerContent);
         }
 
-        let newAttributes["slot"] = innerContent;
-
-        if preg_match_all("/([a-zA-Z0-9_-]+)=\"([^\"]*)\"/", attributesStr, attributeMatches, PREG_SET_ORDER) {
-            for match in attributeMatches {
-                let attrKey = match[1], attrValue = match[2];
-                if attrKey === "class" {
-                    let newClasses = explode(" ", trim(attrValue));
-                    let newAttributes["class"] = newClasses;
-                } else {
-                    let newAttributes[attrKey] = attrValue;
-                }
-            }
-        }
+        let attributes["slot"] = innerContent;
 
         // ✅ Check cache before reading file
-        if fetch componentCode, this->componentCache[componentName] {
-            // use cached content
+        if isset(this->componentCache[componentName]) {
+            let componentCode = this->componentCache[componentName]["content"];
         } else {
             // ✅ Generate full file path
             let componentExtension = ".volt";
@@ -2312,19 +2384,15 @@ class Compiler implements InjectionAwareInterface
             }
             let componentPath = this->view->getViewsDir() . "components/" . componentName . componentExtension;
             let componentCode = file_get_contents(componentPath);
-            if componentCode !== false {
-                let this->componentCache[componentName] = componentCode; // ✅ Store in cache
-            }
         }
 
         if componentCode !== false {
-            if preg_match("/class=\"([^\"]*)\"/", componentCode, baseClass) {
-                let existingClasses = explode(" ", baseClass[1]);
-                let existingClasses = array_filter(existingClasses);
-
-                if fetch classAttr, newAttributes["class"] {
+            let this->componentCache[componentName]["content"] = componentCode; // ✅ Store in cache
+            if isset(this->componentCache[componentName]["classes"]) && !empty(this->componentCache[componentName]["classes"]) {
+                let existingClasses = this->componentCache[componentName]["classes"];
+                if fetch classAttr, attributes["class"] {
                     let mergedClasses = array_unique(array_merge(classAttr, existingClasses));
-                    let finalClass = htmlspecialchars(implode(" ", mergedClasses));
+                    let finalClass = implode(" ", mergedClasses);
                     let componentCode = preg_replace(
                         "/class=\"([^\"]*)\"/",
                         "class=\"" . finalClass . "\"",
@@ -2332,8 +2400,22 @@ class Compiler implements InjectionAwareInterface
                         1
                     );
                 }
-            } elseif isset newAttributes["class"] {
-                let finalClass = htmlspecialchars(implode(" ", newAttributes["class"]));
+            } elseif preg_match("/class=\"([^\"]*)\"/", componentCode, baseClass) {
+                let existingClasses = explode(" ", baseClass[1]);
+                let existingClasses = array_filter(existingClasses);
+                let this->componentCache[componentName]["classes"] = existingClasses; // store classes to avoid regex matching on next parse
+                if fetch classAttr, attributes["class"] {
+                    let mergedClasses = array_unique(array_merge(classAttr, existingClasses));
+                    let finalClass = implode(" ", mergedClasses);
+                    let componentCode = preg_replace(
+                        "/class=\"([^\"]*)\"/",
+                        "class=\"" . finalClass . "\"",
+                        componentCode,
+                        1
+                    );
+                }
+            } elseif isset attributes["class"] {
+                let finalClass = implode(" ", attributes["class"]);
                 if preg_match("/<([a-zA-Z0-9]+)\s*/", componentCode, match) {
                     let tagName = match[1];
                     let componentCode = preg_replace(
@@ -2345,7 +2427,7 @@ class Compiler implements InjectionAwareInterface
                 }
             }
 
-            let componentCode = this->interpolator->__invoke(componentCode, newAttributes);
+            let componentCode = this->interpolator->__invoke(componentCode, attributes);
         } else {
             let componentCode = "INVALID RENDERED COMPONENT";
         }
