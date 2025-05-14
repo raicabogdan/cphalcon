@@ -2319,10 +2319,10 @@ class Compiler implements InjectionAwareInterface
 
             // Read attribute name
             let start = pos;
-            while pos < length && attributesText[pos] !== '=' && attributesText[pos] !== ' ' {
+            while pos < length && attributesText[pos] !== '=' && (attributesText[pos] !== ' ' || attributesText[pos] !== '\n') {
                 let pos++;
             }
-            let attrName = substr(attributesText, start, pos - start);
+            let attrName = trim(substr(attributesText, start, pos - start));
 
             // Skip space (if any) between name and '='
             while pos < length && attributesText[pos] !== '=' {
